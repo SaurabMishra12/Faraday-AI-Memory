@@ -168,7 +168,9 @@ from database.sqlite_db import MemoryDB
 mcp = FastMCP(
     "Faraday-AI-Memory-Cloud",
     host="0.0.0.0",
-    port=PORT
+    port=PORT,
+    sse_path=f"/sse-{FARADAY_API_KEY}",
+    message_path=f"/messages-{FARADAY_API_KEY}/"
 )
 
 # Load data stores
