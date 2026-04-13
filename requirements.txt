@@ -1,0 +1,29 @@
+# Core
+faiss-cpu>=1.7.4
+sentence-transformers>=2.2.0
+numpy>=1.24.0
+
+# MCP Protocol
+mcp[cli]>=1.0.0
+
+# Ingestion — PDF
+PyPDF2>=3.0.0
+
+# Ingestion — OCR (optional, requires Tesseract installed)
+Pillow>=10.0.0
+pytesseract>=0.3.10
+
+# Ingestion — Gemini HTML takeout
+beautifulsoup4>=4.12.0
+lxml>=4.9.0
+
+# Time-aware queries
+python-dateutil>=2.8.0
+
+# Cloud sync
+supabase>=2.0.0
+
+# Cloud deployment (SSE transport)
+starlette>=0.27.0
+uvicorn>=0.23.0
+httpx>=0.24.0

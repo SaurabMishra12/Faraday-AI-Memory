@@ -1,0 +1,13 @@
+# Python environments
+.venv/
+__pycache__/
+*.pyc
+
+# Local data / DBs
+data_raw/
+data_processed/
+embeddings/
+
+# Keys / Config
+.env
+secret
