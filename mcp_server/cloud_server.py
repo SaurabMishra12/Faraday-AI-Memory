@@ -37,6 +37,9 @@ PROJECT_ROOT = str(Path(__file__).parent.parent)
 sys.path.insert(0, PROJECT_ROOT)
 
 from mcp.server.fastmcp import FastMCP
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request
+from starlette.responses import Response
 
 # ─────────────────────────────────────────────────────
 # Configuration
@@ -169,9 +172,27 @@ mcp = FastMCP(
     "Faraday-AI-Memory-Cloud",
     host="0.0.0.0",
     port=PORT,
-    sse_path=f"/sse-{FARADAY_API_KEY}",
-    message_path=f"/messages-{FARADAY_API_KEY}/"
 )
+
+
+class APIKeyMiddleware(BaseHTTPMiddleware):
+    """Block all requests that don't carry the correct X-API-Key header."""
+
+    async def dispatch(self, request: Request, call_next):
+        # Explicit 200 OK for health checks — no auth required
+        if request.url.path in ("/", "/health"):
+            return Response(content="OK", status_code=200, media_type="text/plain")
+        # If no key is configured, allow all (development mode)
+        if not FARADAY_API_KEY:
+            return await call_next(request)
+        incoming_key = request.headers.get("X-API-Key", "")
+        if incoming_key != FARADAY_API_KEY:
+            return Response(
+                content="Unauthorized: Invalid API Key",
+                status_code=401,
+                media_type="text/plain",
+            )
+        return await call_next(request)
 
 # Load data stores
 if CLOUD_DB_PATH.exists() and CLOUD_INDEX_PATH.exists():
@@ -424,5 +445,20 @@ def health_check() -> str:
 # ─────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    print(f"[CLOUD] Starting SSE server on port {PORT}...", file=sys.stderr)
-    mcp.run(transport="sse")
+    import uvicorn
+    from starlette.applications import Starlette
+    from starlette.routing import Route
+    from starlette.responses import PlainTextResponse
+
+    # Build the base ASGI app from FastMCP
+    asgi_app = mcp.streamable_http_app() if hasattr(mcp, 'streamable_http_app') else mcp.sse_app()
+
+    # Wrap with API key middleware
+    secured_app = APIKeyMiddleware(asgi_app)
+
+    print(f"[CLOUD] 🚀 Starting secured SSE server on port {PORT}...", file=sys.stderr)
+    print(f"[CLOUD] 🔒 API Key required: {'YES' if FARADAY_API_KEY else 'NO (dev mode)'}", file=sys.stderr)
+    print(f"[CLOUD] 🔗 SSE endpoint: http://0.0.0.0:{PORT}/sse", file=sys.stderr)
+
+    uvicorn.run(secured_app, host="0.0.0.0", port=PORT, log_level="warning")
+
