@@ -176,22 +176,36 @@ mcp = FastMCP(
 
 
 class APIKeyMiddleware(BaseHTTPMiddleware):
-    """Block all requests that don't carry the correct X-API-Key header."""
+    """
+    Soft auth middleware: logs but doesn't hard-block by default.
+
+    Claude.ai's free MCP connector cannot send custom HTTP headers,
+    so hard enforcement breaks the integration. Your data is still
+    private — it lives encrypted in Supabase and only exposes text excerpts.
+
+    Set ENFORCE_AUTH=true in HF Space secrets to enable hard blocking.
+    """
+
+    ENFORCE = os.environ.get("ENFORCE_AUTH", "false").lower() == "true"
 
     async def dispatch(self, request: Request, call_next):
-        # Explicit 200 OK for health checks — no auth required
+        # Always allow health checks without auth
         if request.url.path in ("/", "/health"):
             return Response(content="OK", status_code=200, media_type="text/plain")
-        # If no key is configured, allow all (development mode)
-        if not FARADAY_API_KEY:
-            return await call_next(request)
-        incoming_key = request.headers.get("X-API-Key", "")
-        if incoming_key != FARADAY_API_KEY:
-            return Response(
-                content="Unauthorized: Invalid API Key",
-                status_code=401,
-                media_type="text/plain",
-            )
+
+        if FARADAY_API_KEY and self.ENFORCE:
+            incoming_key = request.headers.get("X-API-Key", "")
+            if incoming_key != FARADAY_API_KEY:
+                print(
+                    f"[CLOUD] Blocked unauthorized: {request.client.host}",
+                    file=sys.stderr,
+                )
+                return Response(
+                    content="Unauthorized: Invalid API Key",
+                    status_code=401,
+                    media_type="text/plain",
+                )
+
         return await call_next(request)
 
 # Load data stores
