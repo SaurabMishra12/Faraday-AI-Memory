@@ -189,9 +189,9 @@ class APIKeyMiddleware(BaseHTTPMiddleware):
     ENFORCE = os.environ.get("ENFORCE_AUTH", "false").lower() == "true"
 
     async def dispatch(self, request: Request, call_next):
-        # Always allow health checks without auth
-        if request.url.path in ("/", "/health"):
-            return Response(content="OK", status_code=200, media_type="text/plain")
+        # Always allow health checks and CORS preflight without auth
+        if request.url.path in ("/", "/health") or request.method == "OPTIONS":
+            return await call_next(request)
 
         if FARADAY_API_KEY and self.ENFORCE:
             incoming_key = request.headers.get("X-API-Key", "")
@@ -460,9 +460,7 @@ def health_check() -> str:
 
 if __name__ == "__main__":
     import uvicorn
-    from starlette.applications import Starlette
-    from starlette.routing import Route
-    from starlette.responses import PlainTextResponse
+    from starlette.middleware.cors import CORSMiddleware
 
     # Build the base ASGI app from FastMCP
     asgi_app = mcp.streamable_http_app() if hasattr(mcp, 'streamable_http_app') else mcp.sse_app()
@@ -470,9 +468,18 @@ if __name__ == "__main__":
     # Wrap with API key middleware
     secured_app = APIKeyMiddleware(asgi_app)
 
+    # Wrap with CORS Middleware so browser-based clients (like Claude.ai) can connect
+    cors_app = CORSMiddleware(
+        app=secured_app,
+        allow_origins=["*"],         # Allows all origins
+        allow_credentials=True,
+        allow_methods=["*"],         # Allows all methods (GET, POST, OPTIONS, etc.)
+        allow_headers=["*"],         # Allows all headers
+    )
+
     print(f"[CLOUD] 🚀 Starting secured SSE server on port {PORT}...", file=sys.stderr)
     print(f"[CLOUD] 🔒 API Key required: {'YES' if FARADAY_API_KEY else 'NO (dev mode)'}", file=sys.stderr)
-    print(f"[CLOUD] 🔗 SSE endpoint: http://0.0.0.0:{PORT}/sse", file=sys.stderr)
+    print(f"[CLOUD] 🔗 SSE endpoint: http://0.0.0.0:{PORT}/mcp", file=sys.stderr)
 
-    uvicorn.run(secured_app, host="0.0.0.0", port=PORT, log_level="warning")
+    uvicorn.run(cors_app, host="0.0.0.0", port=PORT, log_level="warning")
 
