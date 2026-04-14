@@ -96,15 +96,40 @@ def pull_from_supabase():
             print(f"[CLOUD] Downloading {compressed_name} from Supabase...",
                   file=sys.stderr)
             try:
+                # Try chunked download first (part000, part001, ...)
+                assembled = b""
+                part_idx = 0
+                while True:
+                    chunk_name = f"{compressed_name}.part{part_idx:03d}"
+                    r = httpx.get(
+                        f"{SUPABASE_URL}/storage/v1/object/{SUPABASE_BUCKET}/{chunk_name}",
+                        headers=headers, timeout=120,
+                    )
+                    if r.status_code == 200:
+                        assembled += r.content
+                        print(f"[CLOUD] \u2705 {chunk_name} ({len(r.content)/1024/1024:.1f} MB)", file=sys.stderr)
+                        part_idx += 1
+                    else:
+                        break  # No more chunks
+                
+                if assembled:
+                    print(f"[CLOUD] Decompressing assembled {compressed_name}...", file=sys.stderr)
+                    decompressed_data = gzip.decompress(assembled)
+                    with open(local_path, "wb") as f:
+                        f.write(decompressed_data)
+                    print(f"[CLOUD] \u2705 {remote_name} ready ({len(assembled)/1024/1024:.1f}MB -> {len(decompressed_data)/1024/1024:.1f}MB).", file=sys.stderr)
+                    continue
+
+                # Fallback: try single .gz file
                 r = httpx.get(
                     f"{SUPABASE_URL}/storage/v1/object/{SUPABASE_BUCKET}/{compressed_name}",
                     headers=headers,
                     timeout=120,
                 )
                 
-                # Fallback to uncompressed if .gz is missing (for backward compatibility)
+                # Fallback to uncompressed if .gz is missing
                 if r.status_code == 404:
-                    print(f"[CLOUD] ℹ️ Compressed not found, trying raw {remote_name}...", file=sys.stderr)
+                    print(f"[CLOUD] \u2139\ufe0f Compressed not found, trying raw {remote_name}...", file=sys.stderr)
                     r = httpx.get(
                         f"{SUPABASE_URL}/storage/v1/object/{SUPABASE_BUCKET}/{remote_name}",
                         headers=headers,
@@ -114,16 +139,16 @@ def pull_from_supabase():
                         with open(local_path, "wb") as f:
                             f.write(r.content)
                         size_mb = len(r.content) / (1024 * 1024)
-                        print(f"[CLOUD] ✅ Raw {remote_name} downloaded ({size_mb:.1f} MB).", file=sys.stderr)
+                        print(f"[CLOUD] \u2705 Raw {remote_name} downloaded ({size_mb:.1f} MB).", file=sys.stderr)
                         continue
 
                 if r.status_code != 200:
-                    print(f"[CLOUD] ❌ {compressed_name} download failed ({r.status_code}): {r.text}",
+                    print(f"[CLOUD] \u274c {compressed_name} download failed ({r.status_code}): {r.text}",
                           file=sys.stderr)
                     return False
 
                 # Decompress in memory and write
-                print(f"[CLOUD] Decompressing {compressed_name}...", file=sys.stderr)
+                print(f"[CLOUD] Decompressing single {compressed_name}...", file=sys.stderr)
                 decompressed_data = gzip.decompress(r.content)
                 
                 with open(local_path, "wb") as f:
@@ -131,10 +156,10 @@ def pull_from_supabase():
                     
                 download_mb = len(r.content) / (1024 * 1024)
                 decompressed_mb = len(decompressed_data) / (1024 * 1024)
-                print(f"[CLOUD] ✅ {remote_name} ready ({download_mb:.1f}MB → {decompressed_mb:.1f}MB).",
+                print(f"[CLOUD] \u2705 {remote_name} ready ({download_mb:.1f}MB -> {decompressed_mb:.1f}MB).",
                       file=sys.stderr)
             except Exception as e:
-                print(f"[CLOUD] ❌ Failed to download {remote_name}: {e}",
+                print(f"[CLOUD] \u274c Failed to download {remote_name}: {e}",
                       file=sys.stderr)
                 return False
 

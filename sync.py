@@ -119,7 +119,7 @@ def push():
 
         raw_size_mb = path.stat().st_size / (1024 * 1024)
         
-        # We always compress before uploading
+        # Compress before uploading
         compressed_name = f"{remote_name}.gz"
         print(f"  Compressing {remote_name} ({raw_size_mb:.1f} MB)...", file=sys.stderr)
         
@@ -127,34 +127,44 @@ def push():
             file_content = gzip.compress(f_in.read())
             
         comp_size_mb = len(file_content) / (1024 * 1024)
-        print(f"  Uploading {compressed_name} ({comp_size_mb:.1f} MB)...", file=sys.stderr)
-
-        # Try to remove existing file first (upsert)
-        httpx.delete(
-            f"{SUPABASE_URL}/storage/v1/object/{SUPABASE_BUCKET}/{compressed_name}",
-            headers=_headers(),
-            timeout=30,
-        )
-
-        # Upload compressed file
-        r = httpx.post(
-            f"{SUPABASE_URL}/storage/v1/object/{SUPABASE_BUCKET}/{compressed_name}",
-            headers={
-                **_headers(),
-                "Content-Type": "application/gzip",
-                "x-upsert": "true",
-            },
-            content=file_content,
-            timeout=120,
-        )
-
-        if r.status_code in (200, 201):
-            print(f"  ✅ {compressed_name} uploaded successfully.", file=sys.stderr)
+        
+        # Supabase free tier has a ~50MB object size limit — split into 40MB chunks
+        CHUNK_SIZE = 40 * 1024 * 1024  # 40 MB
+        if len(file_content) > CHUNK_SIZE:
+            chunks = [file_content[i:i+CHUNK_SIZE] for i in range(0, len(file_content), CHUNK_SIZE)]
+            print(f"  Splitting {compressed_name} ({comp_size_mb:.1f} MB) into {len(chunks)} chunks...", file=sys.stderr)
+            for idx, chunk in enumerate(chunks):
+                chunk_name = f"{compressed_name}.part{idx:03d}"
+                httpx.delete(
+                    f"{SUPABASE_URL}/storage/v1/object/{SUPABASE_BUCKET}/{chunk_name}",
+                    headers=_headers(), timeout=30,
+                )
+                r = httpx.post(
+                    f"{SUPABASE_URL}/storage/v1/object/{SUPABASE_BUCKET}/{chunk_name}",
+                    headers={**_headers(), "Content-Type": "application/octet-stream", "x-upsert": "true"},
+                    content=chunk,
+                    timeout=180,
+                )
+                if r.status_code in (200, 201):
+                    print(f"  ✅ {chunk_name} ({len(chunk)/1024/1024:.1f} MB) uploaded.", file=sys.stderr)
+                else:
+                    print(f"  ❌ {chunk_name} failed ({r.status_code}): {r.text}", file=sys.stderr)
         else:
-            print(
-                f"  ❌ {compressed_name} upload failed ({r.status_code}): {r.text}",
-                file=sys.stderr,
+            print(f"  Uploading {compressed_name} ({comp_size_mb:.1f} MB)...", file=sys.stderr)
+            httpx.delete(
+                f"{SUPABASE_URL}/storage/v1/object/{SUPABASE_BUCKET}/{compressed_name}",
+                headers=_headers(), timeout=30,
             )
+            r = httpx.post(
+                f"{SUPABASE_URL}/storage/v1/object/{SUPABASE_BUCKET}/{compressed_name}",
+                headers={**_headers(), "Content-Type": "application/gzip", "x-upsert": "true"},
+                content=file_content,
+                timeout=120,
+            )
+            if r.status_code in (200, 201):
+                print(f"  ✅ {compressed_name} uploaded successfully.", file=sys.stderr)
+            else:
+                print(f"  ❌ {compressed_name} upload failed ({r.status_code}): {r.text}", file=sys.stderr)
 
     print("\n✅ Cloud sync (push) complete.", file=sys.stderr)
 
@@ -162,6 +172,7 @@ def push():
 def pull():
     """Download database and FAISS index from Supabase Storage."""
     import httpx
+    import gzip
 
     _check_credentials()
 
@@ -171,37 +182,54 @@ def pull():
     }
 
     for remote_name, local_path in files_to_download.items():
+        compressed_name = f"{remote_name}.gz"
         print(f"  Downloading {remote_name}...", file=sys.stderr)
 
         try:
-            r = httpx.get(
-                f"{SUPABASE_URL}/storage/v1/object/{SUPABASE_BUCKET}/{remote_name}",
-                headers=_headers(),
-                timeout=120,
-            )
-
-            if r.status_code != 200:
-                print(
-                    f"  ❌ {remote_name} download failed ({r.status_code}): {r.text}",
-                    file=sys.stderr,
-                )
-                continue
-
-            # Ensure parent directory exists
             Path(local_path).parent.mkdir(parents=True, exist_ok=True)
 
-            with open(local_path, "wb") as f:
-                f.write(r.content)
+            # Try chunked download first (part000, part001, ...)
+            assembled = b""
+            part_idx = 0
+            while True:
+                chunk_name = f"{compressed_name}.part{part_idx:03d}"
+                r = httpx.get(
+                    f"{SUPABASE_URL}/storage/v1/object/{SUPABASE_BUCKET}/{chunk_name}",
+                    headers=_headers(), timeout=180,
+                )
+                if r.status_code == 200:
+                    assembled += r.content
+                    print(f"    ✅ {chunk_name} ({len(r.content)/1024/1024:.1f} MB)", file=sys.stderr)
+                    part_idx += 1
+                else:
+                    break  # No more parts
 
-            size_mb = len(r.content) / (1024 * 1024)
-            print(
-                f"  ✅ {remote_name} downloaded ({size_mb:.1f} MB).",
-                file=sys.stderr,
+            if assembled:
+                # Decompress the reassembled chunks
+                data = gzip.decompress(assembled)
+                with open(local_path, "wb") as f:
+                    f.write(data)
+                print(f"  ✅ {remote_name} reassembled ({len(data)/1024/1024:.1f} MB uncompressed).", file=sys.stderr)
+                continue
+
+            # Fallback: try downloading as a single compressed file
+            r = httpx.get(
+                f"{SUPABASE_URL}/storage/v1/object/{SUPABASE_BUCKET}/{compressed_name}",
+                headers=_headers(), timeout=180,
             )
+            if r.status_code == 200:
+                data = gzip.decompress(r.content)
+                with open(local_path, "wb") as f:
+                    f.write(data)
+                print(f"  ✅ {remote_name} downloaded ({len(data)/1024/1024:.1f} MB).", file=sys.stderr)
+            else:
+                print(f"  ❌ {remote_name} not found in Supabase ({r.status_code}).", file=sys.stderr)
+
         except Exception as e:
             print(f"  ❌ {remote_name}: {e}", file=sys.stderr)
 
     print("\n✅ Cloud sync (pull) complete.", file=sys.stderr)
+
 
 
 def status():
