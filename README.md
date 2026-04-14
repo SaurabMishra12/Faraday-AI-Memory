@@ -1,10 +1,6 @@
 ---
 title: Faraday Memory
-emoji: 🧠
-colorFrom: blue
-colorTo: purple
 sdk: docker
-app_port: 7860
 ---
 
 # Faraday AI Memory
