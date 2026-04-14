@@ -30,47 +30,69 @@ You drop files in a folder, run a script, and suddenly your AI actually remember
 
 Your data stays entirely under your control (no relying on bloated SaaS corporate subscriptions).
 
-## The Local Dev Setup (If you want to run it on your own laptop)
+## The "Hold My Hand" Framework Setup Guide
 
-If you're deploying this to the cloud, the `Dockerfile` takes care of the heavy lifting. But if you want to run the ingestion and test locally:
+Look, if you want to deploy this, you actually have to do some work. Follow these steps or enjoy your amnesic AI.
 
-### 1. Requirements
+### Step 1: The Local Data Hoarder Setup
+You're going to generate the embeddings on your own machine because doing it in the cloud for free is a myth.
+1. Clone this repository to your machine. 
+2. Install the requirements like every other Python project in existence: \`pip install -r requirements.txt\`
+3. Put your messy `.md`, `.json`, `.pdf`, etc. into the `data_raw/` directory.
+4. *(Optional but painful)*: If you want to extract text from images, go install `Tesseract-OCR` on your host machine. Don't blame me for the terrible Windows installers, complain to Google.
 
-Install the stuff. You probably already have half of this globally installed anyway.
+### Step 2: Setting up Supabase (The Giant Cloud Bucket)
+Your FAISS vector index will get massive. You can't just shove a 200MB SQLite DB into a Docker image and pretend it's fine. We need cloud storage.
+1. Go to [Supabase](https://supabase.com) and create a free project.
+2. Create a private storage bucket named `faraday-memory`.
+3. Go to Project Settings -> API, and copy your `Project URL` and `service_role` key (yes, the service role, because we bypass Row Level Security. Live a little).
+4. Export them into your local environment variables:
+   - `SUPABASE_URL`
+   - `SUPABASE_KEY`
+
+### Step 3: Feeding Time
+Time to crunch those vectors. Run the ingestion and push script:
 ```bash
-pip install -r requirements.txt
-```
-*(Pro-tip: If you want it to actually read the text out of your images, you need to suffer through installing `Tesseract-OCR` on your OS level. Don't blame me, complain to Google).*
-
-### 2. Configuration
-
-Open `config.py`. It's stupidly simple.
-- Put your raw messy files in the `data_raw/` directory.
-- For the Supabase cloud connection, set these environment variables (or hardcode them if you like playing with fire):
-  - `SUPABASE_URL`
-  - `SUPABASE_KEY` (Needs to be the service key to bypass Row Level Security, since we use private storage buckets)
-
-### 3. Update the Brain
-
-Whenever you hoard more documents, just run:
-```bash
+# This will ingest your files, run the transformer model, 
+# compress the massive SQLite blobs, automatically chunk them if they exceed 40MB,
+# and push them directly to your Supabase bucket.
 python sync.py push
 ```
-It will automatically find the new files, ignore the ones it already did, run the embeddings, compress the database, and shoot it to the cloud.
+*(Wait a few minutes. It's doing heavy math on your CPU. Go get a coffee.)*
 
-### 4. Connect to your AI
+### Step 4: The Cloud Brain (Hugging Face Spaces)
+Now we need the actual MCP Server running 24/7 so Claude or Cursor can talk to it.
+1. Go to [Hugging Face Spaces](https://huggingface.co/spaces) and create a new **Docker** Space.
+2. Connect your GitHub fork of this repository to it.
+3. **CRITICAL:** In the Space Settings -> Variables and secrets, add the following secrets:
+   - `SUPABASE_URL` (From Step 2)
+   - `SUPABASE_KEY` (From Step 2)
+   - `FARADAY_API_KEY` (Make up a secure password here. This protects your data from random script kiddies on the internet).
+4. The Docker container will build, boot up, auto-download the chunks from Supabase, reassemble them in memory, and start an MCP SSE server on port `7860`.
 
-Connect any MCP-compatible agent directly to the cloud server, or run it locally:
-```bash
-# Local standard I/O (For Cursor / Desktop apps)
-python mcp_server/main.py
-
-# Or connect to the Cloud SSE endpoint
-URL: https://<your-huggingface-space>.hf.space/sse
-Header: X-API-Key: <your_secret_password>
+### Step 5: Connecting the AIs
+Connect any MCP-compatible agent (Claude Desktop, Cursor, etc.) directly to your new shiny cloud server.
+```json
+// Example for Claude Desktop (claude_desktop_config.json)
+{
+  "mcpServers": {
+    "faraday": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/inspector",
+        "https://<your-space-name>.hf.space/sse"
+      ],
+      "env": {
+        "X-API-Key": "<your_FARADAY_API_KEY>"
+      }
+    }
+  }
+}
 ```
 
-Enjoy not having to constantly remind your AI what programming language you're using.
+Enjoy not having to constantly remind your AI what programming language you are using, or copying and pasting the exact same system architecture prompt for the 45th time.
 
 ---
-*No personal data, keys, or vector blobs are included in this repo. I `.gitignore`'d all of it. If you manage to leak your API keys, that's entirely on you.*
+*Disclaimer: Absolutely no personal data, keys, or vector blobs are included in this repo. I strictly `.gitignore`'d all of it. If you fork this and manage to leak your own API keys by committing them, that's entirely on you.*
+
